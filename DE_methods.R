@@ -1,0 +1,205 @@
+---
+title: "DE_analysis_methods"
+author: "Constantinos Yeles"
+date: "17/09/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# test_de
+```{r}
+library(tidyverse)
+data_IP <- read_tsv("data/new_analysis_workflow/results_R/results_with_DBs/3_IPP_PIWIL1_all_DBs/1_IPPIWIL_raw_counts.txt")
+mat <- data_IP %>%  column_to_rownames("smallRNA") %>% as.matrix()
+group <- as.factor(str_replace(colnames(mat),"_[:digit:]$","")  %>%
+                     str_replace("COLO205_","") %>% 
+                     str_replace("Control_",""))
+batch <- as.factor(rep(c(1:3),4))
+samples <- data.frame(group,batch,row.names = colnames(mat))
+
+library(edgeR)
+x <- DGEList(counts = mat,samples = samples,lib.size = colSums(mat),norm.factors = rep(1,ncol(mat)))
+design <- model.matrix(~0+group+batch)
+colnames(design) <- gsub("group","",colnames(design))
+rownames(design) <- rownames(samples)
+keep.exprs <- filterByExpr.DGEList(x,group = group)
+x1 <- x[keep.exprs,,keep.lib.sizes=FALSE]
+dim(x);dim(x1)
+# edgeR analysis -----
+x1_TMM <- calcNormFactors(x1, method = "TMM")
+plotMD(x1_TMM,column = 7)
+x1_TMM <- estimateDisp(x1_TMM,design=design,  robust=TRUE)
+plotBCV(x1_TMM)
+fit <- glmQLFit(x1_TMM, design, robust = TRUE)
+head(fit$coefficients)
+plotQLDisp(fit)
+
+con_mat <- makeContrasts(
+  IPP_C_vs_noAb = IPP_C_Ab-IPP_noAb,
+  IPP_N_vs_noAb = IPP_N_Ab-IPP_noAb,
+  IPP_INPUT_vs_noAb = IPP_INPUT-IPP_noAb,
+  IPP_C_vs_INPUT = IPP_C_Ab-IPP_INPUT,
+  IPP_N_vs_INPUT = IPP_N_Ab-IPP_INPUT,
+  levels = design
+)
+
+res_C_nAb <- glmQLFTest(fit,contrast = con_mat[,"IPP_C_vs_noAb"])
+res_N_nAb <- glmQLFTest(fit,contrast = con_mat[,"IPP_N_vs_noAb"])
+res_IN_nAb <- glmQLFTest(fit,contrast = con_mat[,"IPP_INPUT_vs_noAb"])
+res_C_IN <- glmQLFTest(fit,contrast = con_mat[,"IPP_C_vs_INPUT"])
+res_N_IN <- glmQLFTest(fit,contrast = con_mat[,"IPP_N_vs_INPUT"])
+
+is.de <- decideTests(res)
+summary(is.de)
+plotMD(res,status = is.de,values = c(1,-1),
+       col = c("red","blue"),legend="topright")
+top<- topTags(res,n=100)
+res %>% as_tibble()
+path <- "data/new_analysis_workflow/test_DE_methods/IP_DATA/"
+
+topIPP_C_vs_noAb <- topTags(res_C_nAb, n = nrow(res_C_nAb), 
+                            adjust.method = "BH", 
+                            sort.by = "PValue", 
+                            p.value = 1)$table %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_C_vs_noAb.txt"))
+
+topIPP_N_vs_noAb <- topTags(res_N_nAb, n = nrow(res_C_nAb), 
+                            adjust.method = "BH", 
+                            sort.by = "PValue", 
+                            p.value = 1)$table %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_N_vs_noAb.txt"))
+
+topIPP_Input_vs_noAb <- topTags(res_IN_nAb, n = nrow(res_C_nAb), 
+                                adjust.method = "BH", 
+                                sort.by = "PValue", 
+                                p.value = 1)$table %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_Input_vs_noAb.txt"))
+
+topIPP_C_vs_Input <- topTags(res_C_IN, n = nrow(res_C_nAb), 
+                             adjust.method = "BH", 
+                             sort.by = "PValue", 
+                             p.value = 1)$table %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_C_vs_Input.txt"))
+
+topIPP_N_vs_Input <- topTags(res_N_IN, n = nrow(res_C_nAb), 
+                             adjust.method = "BH", 
+                             sort.by = "PValue", 
+                             p.value = 1)$table %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_N_vs_Input.txt"))
+
+# voom analysis ----
+x1_voomTMM <- voom(x1_TMM,design,plot = TRUE)
+vfit <- lmFit(x1_voomTMM,design=design)
+vfit <- contrasts.fit(vfit,con_mat)
+vfit <- eBayes(vfit,robust = TRUE,trend = TRUE)
+
+#IPP_C_vs_noAb
+topIPP_C_vs_noAb_voom <- topTable(vfit,coef = "IPP_C_vs_noAb",
+                             number = nrow(vfit),
+                             adjust.method = "fdr",
+                             sort.by = "p") %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_C_vs_noAb_voom.txt"))
+
+#IPP_N_vs_noAb
+topIPP_N_vs_noAb <- topTable(vfit,coef = "IPP_N_vs_noAb",
+                             number = nrow(vfit),
+                             adjust.method = "fdr",
+                             sort.by = "p") %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_N_vs_noAb_voom.txt"))
+
+#IPP_INPUT_vs_noAb
+topIPP_INPUT_vs_noAb_voom <- topTable(vfit,coef = "IPP_INPUT_vs_noAb",
+                                 number = nrow(vfit),
+                                 adjust.method = "fdr",
+                                 sort.by = "p") %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_INPUT_vs_noAb_voom.txt"))
+
+#IPP_C_vs_INPUT
+topIPP_C_vs_INPUT_voom <- topTable(vfit,coef = "IPP_C_vs_INPUT",
+                              number = nrow(vfit),
+                              adjust.method = "fdr",
+                              sort.by = "p") %>% 
+  as_tibble(rownames = "smallRNA") %>% 
+  write_tsv(str_glue("{path}topIPP_C_vs_INPUT_voom.txt"))
+
+#IPP_N_vs_INPUT
+topIPP_N_vs_INPUT_voom <- topTable(vfit,coef = "IPP_N_vs_INPUT",
+                              number = nrow(vfit),
+                              adjust.method = "fdr",
+                              sort.by = "p") %>% 
+  as_tibble(rownames = "smallRNA") %>%
+  write_tsv(str_glue("{path}topIPP_N_vs_INPUT_voom.txt"))
+  
+# DEseq2 analysis ----
+library(DESeq2)
+coldata <- tibble(condition = as_factor(samples$group),
+                  batch = as_factor(samples$batch))
+dds <- DESeqDataSetFromMatrix(countData = round(x1$counts) ,
+                              colData = coldata,
+                              design = ~ batch + condition)
+
+dds$condition <- relevel(dds$condition, ref = "IPP_noAb")
+dds <- DESeq(dds)
+res <- results(dds)
+summary(res)
+resultsNames(dds)
+
+res_IPP_C_Ab_vs_IPP_noAb <- results(dds, name="condition_IPP_C_Ab_vs_IPP_noAb" , alpha = 0.05) %>% 
+  as_tibble(rownames = "GeneID") %>% 
+  arrange(padj) %>% 
+  write_tsv(str_glue("{path}res_IPP_C_Ab_vs_IPP_noAb_DEseq2.txt"))
+
+res_IPP_INP_vs_IPP_noAb <- results(dds, name="condition_IPP_INPUT_vs_IPP_noAb" , alpha = 0.05) %>% 
+  as_tibble(rownames = "GeneID") %>% 
+  arrange(padj) %>% 
+  write_tsv(str_glue("{path}res_IPP_INP_vs_IPP_noAb_DEseq2.txt"))
+
+res_IPP_N_Ab_vs_IPP_noAb <- results(dds, name="condition_IPP_N_Ab_vs_IPP_noAb" , alpha = 0.05) %>% 
+  as_tibble(rownames = "GeneID") %>% 
+  arrange(padj) %>% 
+  write_tsv(str_glue("{path}res_IPP_N_Ab_vs_IPP_noAb_DEseq2.txt"))
+
+dds <- DESeqDataSetFromMatrix(countData = round(x1$counts) ,
+                              colData = coldata,
+                              design = ~ batch + condition)
+
+dds$condition <- relevel(dds$condition, ref = "IPP_INPUT")
+dds <- DESeq(dds)
+res <- results(dds)
+summary(res)
+resultsNames(dds)
+
+res_IPP_C_Ab_vs_IPP_INPUT <- results(dds, name="condition_IPP_C_Ab_vs_IPP_INPUT" , alpha = 0.05) %>% 
+  as_tibble(rownames = "GeneID") %>% 
+  arrange(padj) %>% 
+  write_tsv(str_glue("{path}res_IPP_C_Ab_vs_IPP_INPUT_DEseq2.txt"))
+
+res_IPP_N_Ab_vs_IPP_INPUT <- results(dds, name="condition_IPP_N_Ab_vs_IPP_INPUT" , alpha = 0.05) %>% 
+  as_tibble(rownames = "GeneID") %>% 
+  arrange(padj) %>% 
+  write_tsv(str_glue("{path}res_IPP_N_Ab_vs_IPP_INPUT_DEseq2.txt"))
+
+# lncDIFF analysis with TMM data
+lcpmTMM <- cpm(x1$counts[,c(1:3,7:9)]) 
+group2 <- group[c(7:9,1:3)] %>% dropEmptyLevels()
+batch2 <- as.factor(rep(c(1:3),2))
+design_2 <- model.matrix(~group2) 
+IPP_INPUT_vs_IPP_C_QML <- lncDIFF::ZIQML.fit(lcpmTMM, design_2)
+IPP_INPUT_vs_IPP_C_LRT <- lncDIFF::ZIQML.LRT(lcpmTMM, design_2)
+
+```
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
